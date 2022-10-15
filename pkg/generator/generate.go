@@ -587,6 +587,21 @@ func (g *schemaGenerator) generateType(
 	}
 }
 
+func (g *schemaGenerator) appendStructType(tstruct *codegen.StructType, sstruct codegen.Type) error {
+	derefType, ok := sstruct.(*codegen.StructType)
+	if !ok {
+		return fmt.Errorf("reference type does not refer to struct type")
+	}
+
+	tstruct.Fields = append(tstruct.Fields, derefType.Fields...)
+	tstruct.RequiredJSONFields = append(
+		tstruct.RequiredJSONFields,
+		derefType.RequiredJSONFields...,
+	)
+
+	return nil
+}
+
 func (g *schemaGenerator) generateStructType(
 	t *schemas.Type,
 	scope nameScope) (codegen.Type, error) {
@@ -602,6 +617,42 @@ func (g *schemaGenerator) generateStructType(
 				return nil, err
 			}
 		}
+
+		if len(t.AllOf) > 0 {
+			// attempt to create merged struct from `allOf` policies
+			var structType codegen.StructType
+			for _, tElt := range t.AllOf {
+				// tElt is a $ref
+				if tElt.Ref != "" {
+					cgtype, err := g.generateReferencedType(tElt.Ref)
+					if err != nil {
+						return nil, err
+					}
+					if derefType, ok := cgtype.(*codegen.NamedType); !ok {
+						g.warner("cannot process this referenced type")
+						continue
+					} else {
+						err = g.appendStructType(&structType, derefType.Decl.Type)
+						if err != nil {
+							g.warner(err.Error())
+							continue
+						}
+					}
+				} else if tElt.Type[0] == "object" {
+					cgtype, err := g.generateStructType(tElt, scope)
+					if err != nil {
+						return nil, err
+					}
+					err = g.appendStructType(&structType, cgtype)
+					if err != nil {
+						g.warner(err.Error())
+						continue
+					}
+				}
+			}
+			return &structType, nil
+		}
+
 		return &codegen.MapType{
 			KeyType:   codegen.PrimitiveType{Type: "string"},
 			ValueType: valueType,
